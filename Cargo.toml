@@ -1,0 +1,18 @@
+[package]
+name = "hello-chatgpt"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+chatgpt_rs = "1.0.0"
+confique = "0.2.3"
+futures = "0.3.27"
+serde = { version = "1.0.158", features = ["derive"] }
+serde_json = "1.0.94"
+sha3 = "0.10.6"
+sqlx = { version = "0.6.2", features = ["sqlite", "runtime-tokio-native-tls"] }
+teloxide = "0.12.2"
+thiserror = "1.0.40"
+tokio = { version = "1.26.0", features = ["full"] }
+tracing = "0.1.37"
+tracing-subscriber = "0.3.16"
