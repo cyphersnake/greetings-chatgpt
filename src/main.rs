@@ -66,6 +66,13 @@ async fn conversation(
         return Err("Internal error".into());
     };
     let msg = msg.text().ok_or("Please provide API key")?.to_owned();
+    if msg.starts_with("/reset") {
+        dialogue
+            .update(DialogueState::Conversation { history: vec![] })
+            .await?;
+        bot.send_message(dialogue.chat_id(), "Reseted").await?;
+        return Ok(());
+    }
 
     trace!(
         "New message from {} in conversation: {}",
