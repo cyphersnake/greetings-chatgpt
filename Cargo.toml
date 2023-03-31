@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2021"
 
 [dependencies]
-chatgpt_rs = "1.0.0"
+chatgpt_rs = "1.1.0"
 confique = "0.2.3"
 futures = "0.3.27"
 serde = { version = "1.0.158", features = ["derive"] }

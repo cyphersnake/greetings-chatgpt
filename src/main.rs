@@ -6,7 +6,7 @@ use teloxide::prelude::*;
 use tracing::*;
 
 mod bot_state;
-use bot_state::{BotState as Storage, DialogueState};
+use bot_state::{BotState as Storage, ChatGPTEngine, DialogueState};
 
 #[derive(Debug, thiserror::Error)]
 enum Error {
@@ -58,19 +58,54 @@ async fn request_api_key(
 async fn conversation(
     bot: Bot,
     dialogue: Dialogue<DialogueState, Storage>,
-    client: ChatGPT,
+    mut client: ChatGPT,
     msg: Message,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     trace!("{:?}", dialogue.get().await?);
-    let Some(DialogueState::Conversation { history }) = dialogue.get().await? else {
+
+    let Some(DialogueState::Conversation { history, version }) = dialogue.get().await? else {
         return Err("Internal error".into());
     };
     let msg = msg.text().ok_or("Please provide API key")?.to_owned();
     if msg.starts_with("/reset") {
         dialogue
-            .update(DialogueState::Conversation { history: vec![] })
+            .update(DialogueState::Conversation {
+                history: vec![],
+                version,
+            })
             .await?;
-        bot.send_message(dialogue.chat_id(), "Reseted").await?;
+        bot.send_message(dialogue.chat_id(), "✖️ History Reseted")
+            .await?;
+        return Ok(());
+    }
+    if msg.starts_with("/tail") {
+        dialogue
+            .update(DialogueState::Conversation {
+                history: history.into_iter().skip(1).collect(),
+                version,
+            })
+            .await?;
+        bot.send_message(dialogue.chat_id(), "✖️ Take Tail").await?;
+        return Ok(());
+    }
+    if msg.starts_with("/gpt3") {
+        dialogue
+            .update(DialogueState::Conversation {
+                history,
+                version: ChatGPTEngine::Gpt35Turbo,
+            })
+            .await?;
+        bot.send_message(dialogue.chat_id(), "🕹GPT-3.5").await?;
+        return Ok(());
+    }
+    if msg.starts_with("/gpt4") {
+        dialogue
+            .update(DialogueState::Conversation {
+                history,
+                version: ChatGPTEngine::Gpt4,
+            })
+            .await?;
+        bot.send_message(dialogue.chat_id(), "🕹GPT-4").await?;
         return Ok(());
     }
 
@@ -80,15 +115,33 @@ async fn conversation(
         msg
     );
 
+    client.config.engine = version;
     let mut conversation = Conversation::new_with_history(client, history);
-    bot.send_chat_action(dialogue.chat_id(), teloxide::types::ChatAction::Typing)
-        .await?;
 
-    let response = match conversation.send_message(msg).await {
+    let task = {
+        let bot = bot.clone();
+        let chat_id = dialogue.chat_id();
+        tokio::task::spawn(async move {
+            loop {
+                _ = bot
+                    .send_chat_action(chat_id, teloxide::types::ChatAction::Typing)
+                    .await;
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            }
+        })
+    };
+
+    let res = conversation.send_message(msg).await;
+    task.abort();
+
+    let response = match res {
         Ok(response) => response,
         Err(err) => {
-            bot.send_message(dialogue.chat_id(), format!("Error while request: {err:?}"))
-                .await?;
+            bot.send_message(
+                dialogue.chat_id(),
+                format!("Error while request: {err:?}, You can try call /reset or /tail"),
+            )
+            .await?;
             return Err(err.into());
         }
     };
@@ -99,8 +152,25 @@ async fn conversation(
     dialogue
         .update(DialogueState::Conversation {
             history: conversation.history,
+            version,
         })
         .await?;
+
+    Ok(())
+}
+
+pub async fn insert_api_key(api_key: &str, storage: &Storage) -> Result<(), sqlx::Error> {
+    use sha3::Digest;
+    let api_hash: Vec<u8> = sha3::Keccak256::digest(api_key).into_iter().collect();
+    let api_prefix: Vec<u8> = api_key.as_bytes().iter().take(10).copied().collect();
+
+    sqlx::query!(
+        r#" INSERT INTO "api_keys" ("key_hash", "key_prefix") VALUES (?, ?)"#,
+        api_hash,
+        api_prefix
+    )
+    .execute(&storage.pool)
+    .await?;
 
     Ok(())
 }
@@ -115,6 +185,7 @@ async fn main() -> Result<(), Error> {
 
     let bot = teloxide::Bot::new(config.telegram_bot_api_key);
 
+    let storage = Storage::try_new(&config.sqlite_database_url).await?;
     Dispatcher::builder(
         bot,
         Update::filter_message()
@@ -123,10 +194,13 @@ async fn main() -> Result<(), Error> {
             .branch(
                 dptree::case![DialogueState::Registration { api_key }].endpoint(request_api_key),
             )
-            .branch(dptree::case![DialogueState::Conversation { history }].endpoint(conversation)),
+            .branch(
+                dptree::case![DialogueState::Conversation { history, version }]
+                    .endpoint(conversation),
+            ),
     )
     .dependencies(dptree::deps![
-        Arc::new(Storage::try_new(&config.sqlite_database_url).await?),
+        Arc::new(storage),
         ChatGPT::new(config.chat_gpt_api_key)?
     ])
     .enable_ctrlc_handler()
