@@ -1,6 +1,9 @@
 use std::{env, sync::Arc};
 
-use chatgpt::prelude::{ChatGPT, Conversation};
+use chatgpt::{
+    prelude::{ChatGPT, Conversation},
+    types::{ChatMessage, Role},
+};
 use confique::Config;
 use teloxide::prelude::*;
 use tracing::*;
@@ -63,15 +66,24 @@ async fn conversation(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     trace!("{:?}", dialogue.get().await?);
 
-    let Some(DialogueState::Conversation { history, version }) = dialogue.get().await? else {
+    let Some(DialogueState::Conversation { history, version, prompt }) = dialogue.get().await? else {
         return Err("Internal error".into());
     };
     let msg = msg.text().ok_or("Please provide API key")?.to_owned();
     if msg.starts_with("/reset") {
         dialogue
             .update(DialogueState::Conversation {
-                history: vec![],
+                history: [prompt.clone()]
+                    .into_iter()
+                    .flat_map(|p| {
+                        Some(ChatMessage {
+                            role: Role::User,
+                            content: p?,
+                        })
+                    })
+                    .collect(),
                 version,
+                prompt,
             })
             .await?;
         bot.send_message(dialogue.chat_id(), "✖️ History Reseted")
@@ -83,6 +95,7 @@ async fn conversation(
             .update(DialogueState::Conversation {
                 history: history.into_iter().skip(1).collect(),
                 version,
+                prompt,
             })
             .await?;
         bot.send_message(dialogue.chat_id(), "✖️ Take Tail").await?;
@@ -93,6 +106,7 @@ async fn conversation(
             .update(DialogueState::Conversation {
                 history,
                 version: ChatGPTEngine::Gpt35Turbo,
+                prompt,
             })
             .await?;
         bot.send_message(dialogue.chat_id(), "🕹GPT-3.5").await?;
@@ -103,9 +117,23 @@ async fn conversation(
             .update(DialogueState::Conversation {
                 history,
                 version: ChatGPTEngine::Gpt4,
+                prompt,
             })
             .await?;
         bot.send_message(dialogue.chat_id(), "🕹GPT-4").await?;
+        return Ok(());
+    }
+    if msg.starts_with("/prompt") {
+        let prompt = msg.trim_start_matches("/prompt");
+
+        dialogue
+            .update(DialogueState::Conversation {
+                history,
+                version,
+                prompt: Some(prompt.to_owned()),
+            })
+            .await?;
+        bot.send_message(dialogue.chat_id(), "📎 Prompt").await?;
         return Ok(());
     }
 
@@ -126,7 +154,7 @@ async fn conversation(
                 _ = bot
                     .send_chat_action(chat_id, teloxide::types::ChatAction::Typing)
                     .await;
-                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
         })
     };
@@ -153,6 +181,7 @@ async fn conversation(
         .update(DialogueState::Conversation {
             history: conversation.history,
             version,
+            prompt,
         })
         .await?;
 
@@ -195,8 +224,12 @@ async fn main() -> Result<(), Error> {
                 dptree::case![DialogueState::Registration { api_key }].endpoint(request_api_key),
             )
             .branch(
-                dptree::case![DialogueState::Conversation { history, version }]
-                    .endpoint(conversation),
+                dptree::case![DialogueState::Conversation {
+                    history,
+                    version,
+                    prompt
+                }]
+                .endpoint(conversation),
             ),
     )
     .dependencies(dptree::deps![

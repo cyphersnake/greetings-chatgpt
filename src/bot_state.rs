@@ -27,6 +27,7 @@ pub enum DialogueState {
     Conversation {
         history: Vec<ChatMessage>,
         version: ChatGPTEngine,
+        prompt: Option<String>,
     },
 }
 
@@ -91,14 +92,19 @@ impl Storage<DialogueState> for BotState {
                     Ok(())
                 })
             }
-            DialogueState::Conversation { history, version } => Box::pin(async move {
+            DialogueState::Conversation {
+                history,
+                version,
+                prompt,
+            } => Box::pin(async move {
                 let history_json = serde_json::to_string(&history)?;
 
                 let version_ref = version.as_ref();
                 sqlx::query!(
-                    r#"UPDATE "users" SET "history" = ?, "version" = ? WHERE "chat_id" = ?"#,
+                    r#"UPDATE "users" SET "history" = ?, "version" = ?, "current_prompt" = ? WHERE "chat_id" = ?"#,
                     history_json,
                     version_ref,
+                    prompt,
                     chat_id.0,
                 )
                 .execute(&self.pool)
@@ -116,7 +122,7 @@ impl Storage<DialogueState> for BotState {
     ) -> BoxFuture<'static, Result<Option<DialogueState>, Self::Error>> {
         Box::pin(async move {
             sqlx::query!(
-                r#"SELECT "history", "version" FROM "users" WHERE "chat_id" = ?"#,
+                r#"SELECT "history", "version", "current_prompt" FROM "users" WHERE "chat_id" = ?"#,
                 chat_id.0,
             )
             .fetch_optional(&self.pool)
@@ -126,6 +132,7 @@ impl Storage<DialogueState> for BotState {
 
                 Ok(DialogueState::Conversation {
                     history: serde_json::from_str(&row.history)?,
+                    prompt: row.current_prompt,
                     version: match row.version.as_str() {
                         "gpt-3.5-turbo" => ChatGPTEngine::Gpt35Turbo,
                         "gpt-3.5-turbo-0301" => ChatGPTEngine::Gpt35Turbo_0301,
